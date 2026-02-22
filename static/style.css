@@ -1,0 +1,43 @@
+/* Arquivo: static/style.css */
+
+/* Corpo da página */
+body {
+    background-color: #f8f9fa; /* cinza claro */
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Cards e formulários */
+.card {
+    border-radius: 10px;
+}
+
+textarea {
+    border-radius: 5px;
+}
+
+/* Botões */
+.btn-primary {
+    background-color: #0d6efd;
+    border-color: #0d6efd;
+    transition: 0.3s;
+}
+
+.btn-primary:hover {
+    background-color: #0b5ed7;
+    border-color: #0b5ed7;
+}
+
+.btn-success {
+    background-color: #198754;
+    border-color: #198754;
+}
+
+.btn-success:hover {
+    background-color: #157347;
+    border-color: #157347;
+}
+
+/* Alertas */
+.alert {
+    border-radius: 5px;
+}
