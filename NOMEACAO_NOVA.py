@@ -5,11 +5,12 @@ from openpyxl import Workbook
 from copy import deepcopy
 
 # =====================================================
-# CONFIGURAÇÃO DOS MEDIADORES (v5.8 - FILTRO CANCELADOS/AS)
+# CONFIGURAÇÃO DOS MEDIADORES (v5.9 - DISPONIBILIDADE ÉZIO)
 # =====================================================
 
 mediadores_config = {
-    "ÉZIO BARCELOS JÚNIOR": {"dias": ["Segunda", "Terça", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
+    # Ézio atualizado: agora inclui "Quarta" e mantém todos os horários (False nas travas)
+    "ÉZIO BARCELOS JÚNIOR": {"dias": ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
     "INGRID TEIXEIRA ANZAI": {"dias": ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
     "JULIANA BABY MARQUES F. MOLES": {"dias": ["Segunda", "Terça", "Quinta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
     "JULIANA THIAGO RODRIGUES": {"dias": ["Segunda", "Terça"], "somente_1330": False, "nao_1330": False, "max_mes": None},
@@ -63,11 +64,9 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         for linha in texto_existentes.strip().split("\n"):
             partes = re.split(r'\t|\s{2,}', linha.strip())
             if len(partes) < 4: continue
-            # Assume ordem: Data, Hora, Processo, Senha, Vara, Mediador
             senha_hist = partes[3].upper()
             med = partes[-1]
             
-            # --- FILTRO HISTÓRICO: IGNORA CANCELADO OU CANCELADA ---
             if "CANCELAD" in senha_hist:
                 continue
 
@@ -95,7 +94,6 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         for d_s, h_s, proc, sen, vara in aud_shuffled:
             is_jec = "JEC" in vara.upper(); dia_txt = obter_nome_dia(d_s)
             
-            # --- FILTRO NOVAS: SE CANCELADO/A, NÃO NOMEIA ---
             if "CANCELAD" in sen.upper():
                 sim_nomeacoes.append([d_s, h_s, proc, sen, vara, "AUDIÊNCIA CANCELADA", "N/A"])
                 continue
@@ -135,7 +133,7 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
     )
 
     for row in f_list: ws.append(row)
-    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.8)"])
+    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.9)"])
     ws.append(["Mediador", "Remuneradas", "JEC", "Total"])
     for n in sorted(mediadores_config.keys()):
         p, g = melhor_resultado["pago"][n], melhor_resultado["gratuito"][n]
