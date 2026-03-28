@@ -21,19 +21,15 @@ mediadores = {
 }
 
 # =====================================================
-# FUNÇÃO PRINCIPAL V2
+# FUNÇÃO PRINCIPAL V3 - EQUIDADE REAL
 # =====================================================
 
 def gerar_nomeacoes_web(texto_existentes, texto_novos):
-    # Contadores separados para equilíbrio JEC vs Outras Varás
     controle_pago = {nome: 0 for nome in mediadores}
     controle_gratuito = {nome: 0 for nome in mediadores}
-    
     controle_dia = {}
     controle_semana = {}
 
-    # Regex V2: Data | Hora | Processo | Senha | Vara
-    # Captura a vara no final para identificar se é JEC
     padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+(\d{7,}-\d{2}\.\d{4})\s+(\S+)\s+(.*)"
 
     # --- PROCESSAR EXISTENTES ---
@@ -48,7 +44,7 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
             mediador = partes[-1].strip()
             
             if mediador in mediadores:
-                # Na v1, não sabíamos o que era JEC, então contamos como pago por segurança
+                # Como o histórico antigo não diferencia JEC, mantemos como pago para fins de trava mensal
                 controle_pago[mediador] += 1
                 data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
                 ano, semana, _ = data.isocalendar()
@@ -80,27 +76,33 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
                 if abs((novo - existente).total_seconds()) / 3600 < 2: return False
         return True
 
-    def escolher_mediador_equitativo(dia, horario, data_str, vara):
+    def escolher_mediador_v3(dia, horario, data_str, vara):
         is_jec = "JEC" in vara.upper()
-        aptos = [m for m in mediadores if pode_atuar(m, dia, horario, data_str)]
+        
+        # Filtra aptos e aplica a REGRA DO ADOLFO (Não faz JEC)
+        aptos = []
+        for m in mediadores:
+            if pode_atuar(m, dia, horario, data_str):
+                if is_jec and m == "ADOLFO BRAGA NETO":
+                    continue
+                aptos.append(m)
         
         if not aptos: return "SEM DISPONIBILIDADE"
         
         if is_jec:
-            # Para JEC: Prioriza quem tem MAIS pagas (equidade)
-            # Desempate: Quem tem MENOS JEC
-            aptos.sort(key=lambda x: (-controle_pago[x], controle_gratuito[x]))
+            # EQUIDADE JEC: Prioriza quem tem MENOS JEC acumulado
+            # Desempate: Quem tem MAIS remuneradas (para compensar)
+            aptos.sort(key=lambda x: (controle_gratuito[x], -controle_pago[x]))
         else:
-            # Para VARA COMUM: Prioriza quem tem MENOS pagas
-            aptos.sort(key=lambda x: controle_pago[x])
+            # EQUIDADE REMUNERADA: Prioriza quem tem MENOS remuneradas
+            # Desempate: Quem tem MAIS JEC (recompensa pelo trabalho gratuito)
+            aptos.sort(key=lambda x: (controle_pago[x], -controle_gratuito[x]))
 
         escolhido = aptos[0]
         
-        # Atualiza contadores
         if is_jec: controle_gratuito[escolhido] += 1
         else: controle_pago[escolhido] += 1
         
-        # Atualiza controles de data/semana
         data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
         ano, semana, _ = data.isocalendar()
         controle_dia.setdefault((escolhido, data_str), []).append(horario)
@@ -108,7 +110,7 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         
         return escolhido
 
-    # --- PROCESSAR NOVOS ---
+    # --- GERAÇÃO DO EXCEL ---
     wb = Workbook()
     ws = wb.active
     ws.title = "Nomeações"
@@ -118,24 +120,21 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
     for linha in linhas:
         resultado = re.search(padrao, linha)
         if not resultado: continue
-            
         data_str, horario, processo, senha, vara = resultado.groups()
         
         try:
             data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
             dia = dia_semana(data)
-            mediador = escolher_mediador_equitativo(dia, horario, data_str, vara)
+            mediador = escolher_mediador_v3(dia, horario, data_str, vara)
             tipo = "GRATUITA (JEC)" if "JEC" in vara.upper() else "REMUNERADA"
             ws.append([data_str, horario, processo, senha, vara, mediador, tipo])
         except: continue
 
-    # Relatório de Equilíbrio
     ws.append([])
-    ws.append(["RELATÓRIO DE EQUIDADE"])
+    ws.append(["RELATÓRIO DE EQUIDADE (V3)"])
     ws.append(["Mediador", "Remuneradas", "JEC", "Total"])
     for nome in sorted(mediadores.keys()):
-        p = controle_pago[nome]
-        g = controle_gratuito[nome]
+        p, g = controle_pago[nome], controle_gratuito[nome]
         ws.append([nome, p, g, p + g])
 
     wb.save("NOMEACOES_CEJUSC.xlsx")
