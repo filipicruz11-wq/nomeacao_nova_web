@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from copy import deepcopy
 
 # =====================================================
-# CONFIGURAÇÃO DOS MEDIADORES
+# CONFIGURAÇÃO DOS MEDIADORES (v5.2)
 # =====================================================
 
 mediadores_config = {
@@ -19,10 +19,10 @@ mediadores_config = {
     "ADOLFO BRAGA NETO": {"dias": ["Terça"], "somente_1330": True, "nao_1330": False, "max_mes": 2},
     "DANIELE FRANCISCA B. REIS": {"dias": ["Terça", "Quarta", "Sexta"], "somente_1330": True, "nao_1330": False, "max_mes": None},
     "DANIELLA BOPPRÉ DE A. ABRAM": {"dias": ["Terça", "Quinta"], "somente_1330": False, "nao_1330": True, "max_mes": 2},
-    "FABIANA FUKASE FLORENCIO": {"dias": ["Terça", "Quarta", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None}
+    "FABIANA FUKASE FLORENCIO": {"dias": ["Terça", "Quarta", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
+    "PATRÍCIA MARIA O. PASSANEZI": {"dias": ["Segunda"], "somente_1330": False, "nao_1330": False, "max_mes": None}
 }
 
-# --- FUNÇÕES DE APOIO CORRIGIDAS ---
 def obter_nome_dia(data_s):
     dt_obj = datetime.datetime.strptime(data_s, "%d/%m/%Y")
     return ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][dt_obj.weekday()]
@@ -37,21 +37,23 @@ def pode_atuar(nome, horario_s, data_s, c_pago, c_gratuito, c_dia, c_semana):
     if config_med["somente_1330"] and horario_s != "13:30": return False
     if config_med["nao_1330"] and horario_s == "13:30": return False
     
+    # Trava específica da Patrícia (reforço)
+    if nome == "PATRÍCIA MARIA O. PASSANEZI" and dia_txt != "Segunda": return False
+    
     total_atual = c_pago[nome] + c_gratuito[nome]
     if config_med["max_mes"] is not None and total_atual >= config_med["max_mes"]: return False
     
-    if nome in ["DANIELLA BOPPRÉ DE A. ABRAM", "ADOLFO BRAGA NETO"]:
-        if c_semana.get((nome, ano, sem), 0) >= 1: return False
+    if nome in ["DANIELLA BOPPRÉ DE A. ABRAM", "ADOLFO BRAGA NETO"] and c_semana.get((nome, ano, sem), 0) >= 1: return False
     
     if (nome, data_s) in c_dia:
         h_novo = datetime.datetime.strptime(horario_s, "%H:%M")
-        for h_existente_s in c_dia[(nome, data_s)]:
-            h_ex = datetime.datetime.strptime(h_existente_s, "%H:%M")
+        for h_ex_s in c_dia[(nome, data_s)]:
+            h_ex = datetime.datetime.strptime(h_ex_s, "%H:%M")
             if abs((h_novo - h_ex).total_seconds()) / 3600 < 2: return False
     return True
 
 # =====================================================
-# MOTOR DE SIMULAÇÃO (v5.1 - OTIMIZADO PARA RENDER)
+# MOTOR DE SIMULAÇÃO (v5.2)
 # =====================================================
 
 def gerar_nomeacoes_web(texto_existentes, texto_novos):
@@ -80,32 +82,43 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
     melhor_resultado = None
     menor_score = float('inf')
 
-    # Reduzido para 200 para evitar TIMEOUT no Render
     for _ in range(200):
         c_pago, c_gratuito = deepcopy(hist_pago), deepcopy(hist_gratuito)
         c_dia, c_semana = deepcopy(hist_dia), deepcopy(hist_semana)
         sim_nomeacoes = []
         sim_penalty = 0
         
-        # Embaralha as audiências para testar ordens diferentes
         aud_shuffled = random.sample(novas_list, len(novas_list))
         
         for d_s, h_s, proc, sen, vara in aud_shuffled:
             is_jec = "JEC" in vara.upper()
-            aptos = [m for m in mediadores_config if pode_atuar(m, h_s, d_s, c_pago, c_gratuito, c_dia, c_semana)]
-            if is_jec: aptos = [m for m in aptos if m != "ADOLFO BRAGA NETO"]
+            dia_txt = obter_nome_dia(d_s)
+            
+            # Filtragem de Aptos com as novas regras
+            aptos = []
+            for m in mediadores_config:
+                if pode_atuar(m, h_s, d_s, c_pago, c_gratuito, c_dia, c_semana):
+                    # Regras Adolfo
+                    if is_jec and m == "ADOLFO BRAGA NETO": continue
+                    # Regras Patrícia
+                    if m == "PATRÍCIA MARIA O. PASSANEZI":
+                        if not is_jec or dia_txt != "Segunda": continue
+                    
+                    aptos.append(m)
             
             if not aptos:
                 sim_nomeacoes.append([d_s, h_s, proc, sen, vara, "SEM DISPONIBILIDADE", "N/A"])
                 continue
             
-            # Escolha com foco em equidade
-            if is_jec: aptos.sort(key=lambda x: (c_gratuito[x], -c_pago[x]))
-            else: aptos.sort(key=lambda x: (c_pago[x], -c_gratuito[x]))
+            # Lógica de Escolha
+            if is_jec and dia_txt == "Segunda" and "PATRÍCIA MARIA O. PASSANEZI" in aptos:
+                escolhido = "PATRÍCIA MARIA O. PASSANEZI"
+            else:
+                if is_jec: aptos.sort(key=lambda x: (c_gratuito[x], -c_pago[x]))
+                else: aptos.sort(key=lambda x: (c_pago[x], -c_gratuito[x]))
+                escolhido = aptos[0]
             
-            escolhido = aptos[0]
-            
-            # Penalidade se o mediador já trabalha no dia (Logística)
+            # Penalidade Logística (mais de uma por dia)
             if (escolhido, d_s) in c_dia: sim_penalty += 100
 
             if is_jec: c_gratuito[escolhido] += 1
@@ -117,28 +130,24 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
             c_semana[(escolhido, a, s)] = c_semana.get((escolhido, a, s), 0) + 1
             sim_nomeacoes.append([d_s, h_s, proc, sen, vara, escolhido, "JEC" if is_jec else "PAGA"])
 
-        # Cálculo do Score de Equilíbrio
-        diff_jec = max(c_gratuito.values()) - min(c_gratuito.values())
-        diff_paga = max(c_pago.values()) - min(c_pago.values())
-        score = (diff_jec * 15) + (diff_paga * 25) + sim_penalty
+        # Cálculo do Score de Equidade
+        score = (max(c_gratuito.values()) - min(c_gratuito.values())) * 15 + \
+                (max(c_pago.values()) - min(c_pago.values())) * 25 + sim_penalty
         
         if score < menor_score:
             menor_score = score
             melhor_resultado = {"nomeacoes": sim_nomeacoes, "pago": c_pago, "gratuito": c_gratuito}
 
-    # Gerar Excel
+    # Excel
     wb = Workbook()
     ws = wb.active
     ws.title = "Nomeações"
     ws.append(["Data", "Horário", "Processo", "Senha", "Vara", "Mediador", "Tipo"])
-
     f_list = sorted(melhor_resultado["nomeacoes"], key=lambda x: (datetime.datetime.strptime(x[0], "%d/%m/%Y"), x[1]))
     for row in f_list: ws.append(row)
-
-    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.1)"])
+    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.2)"])
     ws.append(["Mediador", "Remuneradas", "JEC", "Total"])
     for n in sorted(mediadores_config.keys()):
         p, g = melhor_resultado["pago"][n], melhor_resultado["gratuito"][n]
         ws.append([n, p, g, p + g])
-
     wb.save("NOMEACOES_CEJUSC.xlsx")
