@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from copy import deepcopy
 
 # =====================================================
-# CONFIGURAÇÃO DOS MEDIADORES (v5.3 - TRAVAS DE FERRO)
+# CONFIGURAÇÃO DOS MEDIADORES (v5.4 - REGRAS DETERMINÍSTICAS)
 # =====================================================
 
 mediadores_config = {
@@ -32,15 +32,13 @@ def pode_atuar(nome, horario_s, data_s, c_pago, c_gratuito, c_dia, c_semana, var
     dia_txt = obter_nome_dia(data_s)
     is_jec = "JEC" in vara.upper()
     
-    # --- BLOQUEIOS RÍGIDOS PATRÍCIA ---
+    # --- BLOQUEIOS RÍGIDOS ---
     if nome == "PATRÍCIA MARIA O. PASSANEZI":
-        if not is_jec: return False  # NUNCA faz remunerada
-        if dia_txt != "Segunda": return False # NUNCA faz fora de segunda
+        if not is_jec: return False 
+        if dia_txt != "Segunda": return False
     
-    # --- BLOQUEIOS RÍGIDOS ADOLFO ---
     if nome == "ADOLFO BRAGA NETO" and is_jec: return False
 
-    # --- REGRAS GERAIS ---
     if dia_txt not in config_med["dias"]: return False
     if config_med["somente_1330"] and horario_s != "13:30": return False
     if config_med["nao_1330"] and horario_s == "13:30": return False
@@ -56,11 +54,10 @@ def pode_atuar(nome, horario_s, data_s, c_pago, c_gratuito, c_dia, c_semana, var
         for h_ex_s in c_dia[(nome, data_s)]:
             h_ex = datetime.datetime.strptime(h_ex_s, "%H:%M")
             if abs((h_novo - h_ex).total_seconds()) / 3600 < 2: return False
-            
     return True
 
 # =====================================================
-# MOTOR DE SIMULAÇÃO (v5.3)
+# MOTOR DE SIMULAÇÃO (v5.4)
 # =====================================================
 
 def gerar_nomeacoes_web(texto_existentes, texto_novos):
@@ -81,8 +78,14 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
                     hist_semana[(med, a, s)] = hist_semana.get((med, a, s), 0) + 1
                 except: continue
 
-    padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+(\d{7,}-\d{2}\.\d{4})\s+(\S+)\s+(.*)"
-    novas_list = [list(re.search(padrao, l).groups()) for l in texto_novos.strip().split("\n") if re.search(padrao, l)]
+    padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+(\d{7,}-\d{2}\.\d.4)\s+(\S+)\s+(.*)"
+    # Corrigindo regex para ser mais flexível com pontos e espaços
+    padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+([\d.-]+)\s+(\S+)\s+(.*)"
+    
+    novas_list = []
+    for l in texto_novos.strip().split("\n"):
+        res = re.search(padrao, l)
+        if res: novas_list.append(list(res.groups()))
 
     melhor_resultado = None; menor_score = float('inf')
 
@@ -91,30 +94,28 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         c_dia, c_semana = deepcopy(hist_dia), deepcopy(hist_semana)
         sim_nomeacoes = []; sim_penalty = 0
         
+        # Ordem aleatória apenas para os outros mediadores
         aud_shuffled = random.sample(novas_list, len(novas_list))
         
         for d_s, h_s, proc, sen, vara in aud_shuffled:
             is_jec = "JEC" in vara.upper(); dia_txt = obter_nome_dia(d_s)
             
-            # Filtra aptos já com as travas rígidas de Patrícia e Adolfo dentro do pode_atuar
-            aptos = [m for m in mediadores_config if pode_atuar(m, h_s, d_s, c_pago, c_gratuito, c_dia, c_semana, vara)]
-            
-            if not aptos:
-                sim_nomeacoes.append([d_s, h_s, proc, sen, vara, "SEM DISPONIBILIDADE", "N/A"]); continue
-            
-            # --- LÓGICA DE SELEÇÃO PRIORITÁRIA ---
-            if is_jec and dia_txt == "Segunda" and "PATRÍCIA MARIA O. PASSANEZI" in aptos:
+            # --- REGRA MANDATÓRIA PATRÍCIA (Independente de Nota) ---
+            if is_jec and dia_txt == "Segunda" and pode_atuar("PATRÍCIA MARIA O. PASSANEZI", h_s, d_s, c_pago, c_gratuito, c_dia, c_semana, vara):
                 escolhido = "PATRÍCIA MARIA O. PASSANEZI"
             else:
-                # Se for Segunda/JEC e a Patrícia NÃO estiver apta (por causa das 2h), aí sim distribuímos
-                # Removemos a Patrícia de qualquer outra situação para garantir que ela não pegue remunerada
-                aptos_filtrados = [a for a in aptos if a != "PATRÍCIA MARIA O. PASSANEZI" or (is_jec and dia_txt == "Segunda")]
+                # Se não for Patrícia, busca os outros e garante que ela não entre por engano
+                aptos = [m for m in mediadores_config if m != "PATRÍCIA MARIA O. PASSANEZI" and pode_atuar(m, h_s, d_s, c_pago, c_gratuito, c_dia, c_semana, vara)]
                 
-                if is_jec: aptos_filtrados.sort(key=lambda x: (c_gratuito[x], -c_pago[x]))
-                else: aptos_filtrados.sort(key=lambda x: (c_pago[x], -c_gratuito[x]))
-                escolhido = aptos_filtrados[0]
+                if not aptos:
+                    sim_nomeacoes.append([d_s, h_s, proc, sen, vara, "SEM DISPONIBILIDADE", "N/A"]); continue
+                
+                if is_jec: aptos.sort(key=lambda x: (c_gratuito[x], -c_pago[x]))
+                else: aptos.sort(key=lambda x: (c_pago[x], -c_gratuito[x]))
+                escolhido = aptos[0]
             
-            if (escolhido, d_s) in c_dia: sim_penalty += 200 # Aumentei a multa de logística para 200
+            # Penalidades
+            if (escolhido, d_s) in c_dia: sim_penalty += 300
 
             if is_jec: c_gratuito[escolhido] += 1
             else: c_pago[escolhido] += 1
@@ -124,7 +125,7 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
             c_semana[(escolhido, a, s)] = c_semana.get((escolhido, a, s), 0) + 1
             sim_nomeacoes.append([d_s, h_s, proc, sen, vara, escolhido, "JEC" if is_jec else "PAGA"])
 
-        # Score: Max-Min de JEC e Pagas + Logística
+        # Score focado no equilíbrio dos outros mediadores
         score = (max(c_gratuito.values()) - min(c_gratuito.values())) * 20 + \
                 (max(c_pago.values()) - min(c_pago.values())) * 30 + sim_penalty
         
@@ -137,7 +138,7 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
     ws.append(["Data", "Horário", "Processo", "Senha", "Vara", "Mediador", "Tipo"])
     f_list = sorted(melhor_resultado["nomeacoes"], key=lambda x: (datetime.datetime.strptime(x[0], "%d/%m/%Y"), x[1]))
     for row in f_list: ws.append(row)
-    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.3)"])
+    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.4)"])
     ws.append(["Mediador", "Remuneradas", "JEC", "Total"])
     for n in sorted(mediadores_config.keys()):
         p, g = melhor_resultado["pago"][n], melhor_resultado["gratuito"][n]
