@@ -1,12 +1,14 @@
 import datetime
 import re
+import random
 from openpyxl import Workbook
+from copy import deepcopy
 
 # =====================================================
 # CONFIGURAÇÃO DOS MEDIADORES
 # =====================================================
 
-mediadores = {
+mediadores_config = {
     "ÉZIO BARCELOS JÚNIOR": {"dias": ["Segunda", "Terça", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
     "INGRID TEIXEIRA ANZAI": {"dias": ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
     "JULIANA BABY MARQUES F. MOLES": {"dias": ["Segunda", "Terça", "Quinta"], "somente_1330": False, "nao_1330": False, "max_mes": None},
@@ -20,130 +22,134 @@ mediadores = {
     "FABIANA FUKASE FLORENCIO": {"dias": ["Terça", "Quarta", "Quinta", "Sexta"], "somente_1330": False, "nao_1330": False, "max_mes": None}
 }
 
+# --- FUNÇÕES DE APOIO ---
+def dia_semana(data_str):
+    data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
+    return ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][data.weekday()]
+
+def pode_atuar(nome, horario, data_str, c_pago, c_gratuito, c_dia, c_semana):
+    dados = mediadores_config[nome]
+    dia = dia_semana(data_str)
+    data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
+    ano, sem, _ = data.isocalendar()
+    
+    if dia not in dados["dias"]: return False
+    if dados["somente_1330"] and horario != "13:30": return False
+    if dados["nao_1330"] and horario == "13:30": return False
+    if dados["max_mes"] is not None and (c_pago[nome] + c_gratuito[nome]) >= dados["max_mes"]: return False
+    if nome in ["DANIELLA BOPPRÉ DE A. ABRAM", "ADOLFO BRAGA NETO"] and c_semana.get((nome, ano, sem), 0) >= 1: return False
+    
+    # Regra de 2h de intervalo
+    if (nome, data_str) in c_dia:
+        novo = datetime.datetime.strptime(horario, "%H:%M")
+        for h in c_dia[(nome, data_str)]:
+            existente = datetime.datetime.strptime(h, "%H:%M")
+            if abs((novo - existente).total_seconds()) / 3600 < 2: return False
+    return True
+
 # =====================================================
-# FUNÇÃO PRINCIPAL V4 - EQUIDADE NO HISTÓRICO
+# MOTOR DE SIMULAÇÃO (v5)
 # =====================================================
 
 def gerar_nomeacoes_web(texto_existentes, texto_novos):
-    controle_pago = {nome: 0 for nome in mediadores}
-    controle_gratuito = {nome: 0 for nome in mediadores}
-    controle_dia = {}
-    controle_semana = {}
+    # 1. Preparar Histórico Base
+    hist_pago = {n: 0 for n in mediadores_config}
+    hist_gratuito = {n: 0 for n in mediadores_config}
+    hist_dia = {}
+    hist_semana = {}
 
-    # Regex para leitura das 5 colunas (Data, Hora, Processo, Senha, Vara)
-    padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+(\d{7,}-\d{2}\.\d{4})\s+(\S+)\s+(.*)"
-
-    # --- PROCESSAR EXISTENTES (HISTÓRICO) ---
     if texto_existentes:
-        linhas_existentes = texto_existentes.strip().split("\n")
-        for linha in linhas_existentes:
-            # Tenta dividir por TAB ou múltiplos espaços
+        for linha in texto_existentes.strip().split("\n"):
             partes = re.split(r'\t|\s{2,}', linha.strip())
-            
             if len(partes) < 4: continue
-            
-            data_str = partes[0].strip()
-            horario = partes[1].strip()
-            # A vara geralmente é a penúltima ou antepenúltima antes do nome do mediador
-            linha_completa = linha.upper()
-            mediador = partes[-1].strip()
-            
-            if mediador in mediadores:
-                # Verifica se a linha contém JEC para computar corretamente no histórico
-                if "JEC" in linha_completa:
-                    controle_gratuito[mediador] += 1
-                else:
-                    controle_pago[mediador] += 1
-                
+            data_s, hora_s, med = partes[0], partes[1], partes[-1]
+            if med in mediadores_config:
+                if "JEC" in linha.upper(): hist_gratuito[med] += 1
+                else: hist_pago[med] += 1
                 try:
-                    data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
-                    ano, semana, _ = data.isocalendar()
-                    controle_dia.setdefault((mediador, data_str), []).append(horario)
-                    controle_semana[(mediador, ano, semana)] = controle_semana.get((mediador, ano, semana), 0) + 1
+                    dt = datetime.datetime.strptime(data_s, "%d/%m/%Y")
+                    a, s, _ = dt.isocalendar()
+                    hist_dia.setdefault((med, data_s), []).append(hora_s)
+                    hist_semana[(med, a, s)] = hist_semana.get((med, a, s), 0) + 1
                 except: continue
 
-    # --- FUNÇÕES AUXILIARES ---
-    def dia_semana(data):
-        return ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][data.weekday()]
+    # 2. Extrair Novas Audiências
+    padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+(\d{7,}-\d{2}\.\d{4})\s+(\S+)\s+(.*)"
+    novas_list = []
+    for linha in texto_novos.strip().split("\n"):
+        res = re.search(padrao, linha)
+        if res: novas_list.append(list(res.groups()))
 
-    def pode_atuar(nome, dia, horario, data_str):
-        dados = mediadores[nome]
-        data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
-        ano, semana, _ = data.isocalendar()
-        
-        if dia not in dados["dias"]: return False
-        if dados["somente_1330"] and horario != "13:30": return False
-        if dados["nao_1330"] and horario == "13:30": return False
-        if dados["max_mes"] is not None and (controle_pago[nome] + controle_gratuito[nome]) >= dados["max_mes"]: return False
-        
-        if nome in ["DANIELLA BOPPRÉ DE A. ABRAM", "ADOLFO BRAGA NETO"]:
-            if controle_semana.get((nome, ano, semana), 0) >= 1: return False
-                
-        chave = (nome, data_str)
-        if chave in controle_dia:
-            novo = datetime.datetime.strptime(horario, "%H:%M")
-            for h in controle_dia[chave]:
-                existente = datetime.datetime.strptime(h, "%H:%M")
-                if abs((novo - existente).total_seconds()) / 3600 < 2: return False
-        return True
+    # 3. Rodar 1000 Simulações
+    melhor_resultado = None
+    menor_score = float('inf')
 
-    def escolher_mediador_v4(dia, horario, data_str, vara):
-        is_jec = "JEC" in vara.upper()
+    for _ in range(1000):
+        # Clonar estados para esta simulação
+        curr_pago = deepcopy(hist_pago)
+        curr_gratuito = deepcopy(hist_gratuito)
+        curr_dia = deepcopy(hist_dia)
+        curr_semana = deepcopy(hist_semana)
+        sim_nomeacoes = []
+        sim_logistica_penalty = 0
         
-        aptos = []
-        for m in mediadores:
-            if pode_atuar(m, dia, horario, data_str):
-                if is_jec and m == "ADOLFO BRAGA NETO": continue
-                aptos.append(m)
+        # Embaralhar a ordem de processamento das audiências
+        audiencias_shuffled = random.sample(novas_list, len(novas_list))
         
-        if not aptos: return "SEM DISPONIBILIDADE"
-        
-        if is_jec:
-            # Prioriza quem tem MENOS JEC acumulado (considerando o histórico colado!)
-            aptos.sort(key=lambda x: (controle_gratuito[x], -controle_pago[x]))
-        else:
-            # Prioriza quem tem MENOS remuneradas (considerando o histórico colado!)
-            aptos.sort(key=lambda x: (controle_pago[x], -controle_gratuito[x]))
+        for data_s, hora_s, proc, sen, vara in audiencias_shuffled:
+            is_jec = "JEC" in vara.upper()
+            aptos = [m for m in mediadores_config if pode_atuar(m, hora_s, data_s, curr_pago, curr_gratuito, curr_dia, curr_semana)]
+            if is_jec: aptos = [m for m in aptos if m != "ADOLFO BRAGA NETO"]
+            
+            if not aptos:
+                sim_nomeacoes.append([data_s, hora_s, proc, sen, vara, "SEM DISPONIBILIDADE", "N/A"])
+                continue
+            
+            # Escolha baseada em carga atual da simulação
+            if is_jec: aptos.sort(key=lambda x: (curr_gratuito[x], -curr_pago[x]))
+            else: aptos.sort(key=lambda x: (curr_pago[x], -curr_gratuito[x]))
+            
+            escolhido = aptos[0]
+            
+            # Penalidade de Logística: se o mediador já tem audiência no dia, aumenta o score da simulação
+            if (escolhido, data_s) in curr_dia:
+                sim_logistica_penalty += 50 # Peso alto para evitar 2 no mesmo dia
 
-        escolhido = aptos[0]
-        
-        if is_jec: controle_gratuito[escolhido] += 1
-        else: controle_pago[escolhido] += 1
-        
-        # Registra para evitar conflitos de horário nas próximas linhas
-        data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
-        ano, semana, _ = data.isocalendar()
-        controle_dia.setdefault((escolhido, data_str), []).append(horario)
-        controle_semana[(escolhido, ano, semana)] = controle_semana.get((escolhido, ano, semana), 0) + 1
-        
-        return escolhido
+            # Atualizar estado da simulação
+            if is_jec: curr_gratuito[escolhido] += 1
+            else: curr_pago[escolhido] += 1
+            dt = datetime.datetime.strptime(data_s, "%d/%m/%Y")
+            a, s, _ = dt.isocalendar()
+            curr_dia.setdefault((escolhido, data_s), []).append(hora_s)
+            curr_semana[(escolhido, a, s)] = curr_semana.get((escolhido, a, s), 0) + 1
+            sim_nomeacoes.append([data_s, hora_s, proc, sen, vara, escolhido, "JEC" if is_jec else "PAGA"])
 
-    # --- GERAÇÃO DO EXCEL ---
+        # 4. Calcular Score de Qualidade da Simulação
+        # O desvio padrão simplificado: (max - min)
+        diff_jec = max(curr_gratuito.values()) - min(curr_gratuito.values())
+        diff_paga = max(curr_pago.values()) - min(curr_pago.values())
+        
+        total_score = (diff_jec * 10) + (diff_paga * 20) + sim_logistica_penalty
+        
+        if total_score < menor_score:
+            menor_score = total_score
+            melhor_resultado = {"nomeacoes": sim_nomeacoes, "pago": curr_pago, "gratuito": curr_gratuito}
+
+    # --- GERAR EXCEL FINAL ---
     wb = Workbook()
     ws = wb.active
-    ws.title = "Nomeações"
+    ws.title = "Nomeações Otimizadas"
     ws.append(["Data", "Horário", "Processo", "Senha", "Vara", "Mediador", "Tipo"])
 
-    linhas = texto_novos.strip().split("\n")
-    for linha in linhas:
-        resultado = re.search(padrao, linha)
-        if not resultado: continue
-        data_str, horario, processo, senha, vara = resultado.groups()
-        
-        try:
-            data = datetime.datetime.strptime(data_str, "%d/%m/%Y")
-            dia = dia_semana(data)
-            mediador = escolher_mediador_v4(dia, horario, data_str, vara)
-            tipo = "GRATUITA (JEC)" if "JEC" in vara.upper() else "REMUNERADA"
-            ws.append([data_str, horario, processo, senha, vara, mediador, tipo])
-        except: continue
+    # Ordenar por data para o Excel ficar bonito
+    final_list = sorted(melhor_resultado["nomeacoes"], key=lambda x: (datetime.datetime.strptime(x[0], "%d/%m/%Y"), x[1]))
+    for row in final_list: ws.append(row)
 
-    # Relatório de Equidade
     ws.append([])
-    ws.append(["RELATÓRIO DE EQUIDADE ACUMULADO (HISTÓRICO + NOVOS)"])
+    ws.append(["RELATÓRIO DE EQUIDADE (V5 - OTIMIZADO)"])
     ws.append(["Mediador", "Remuneradas", "JEC", "Total"])
-    for nome in sorted(mediadores.keys()):
-        p, g = controle_pago[nome], controle_gratuito[nome]
-        ws.append([nome, p, g, p + g])
+    for n in sorted(mediadores_config.keys()):
+        p, g = melhor_resultado["pago"][n], melhor_resultado["gratuito"][n]
+        ws.append([n, p, g, p + g])
 
     wb.save("NOMEACOES_CEJUSC.xlsx")
