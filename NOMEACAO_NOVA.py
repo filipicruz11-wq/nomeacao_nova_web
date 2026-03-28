@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from copy import deepcopy
 
 # =====================================================
-# CONFIGURAÇÃO DOS MEDIADORES (v5.6 - ORDENAÇÃO TRIPLA)
+# CONFIGURAÇÃO DOS MEDIADORES (v5.8 - FILTRO CANCELADOS/AS)
 # =====================================================
 
 mediadores_config = {
@@ -55,10 +55,6 @@ def pode_atuar(nome, horario_s, data_s, c_pago, c_gratuito, c_dia, c_semana, var
             if abs((h_novo - h_ex).total_seconds()) / 3600 < 2: return False
     return True
 
-# =====================================================
-# MOTOR DE SIMULAÇÃO (v5.6)
-# =====================================================
-
 def gerar_nomeacoes_web(texto_existentes, texto_novos):
     hist_pago = {n: 0 for n in mediadores_config}; hist_gratuito = {n: 0 for n in mediadores_config}
     hist_dia, hist_semana = {}, {}
@@ -67,13 +63,20 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         for linha in texto_existentes.strip().split("\n"):
             partes = re.split(r'\t|\s{2,}', linha.strip())
             if len(partes) < 4: continue
-            d_s, h_s, med = partes[0], partes[1], partes[-1]
+            # Assume ordem: Data, Hora, Processo, Senha, Vara, Mediador
+            senha_hist = partes[3].upper()
+            med = partes[-1]
+            
+            # --- FILTRO HISTÓRICO: IGNORA CANCELADO OU CANCELADA ---
+            if "CANCELAD" in senha_hist:
+                continue
+
             if med in mediadores_config:
                 if "JEC" in linha.upper(): hist_gratuito[med] += 1
                 else: hist_pago[med] += 1
                 try:
-                    dt = datetime.datetime.strptime(d_s, "%d/%m/%Y"); a, s, _ = dt.isocalendar()
-                    hist_dia.setdefault((med, d_s), []).append(h_s)
+                    dt = datetime.datetime.strptime(partes[0], "%d/%m/%Y"); a, s, _ = dt.isocalendar()
+                    hist_dia.setdefault((med, partes[0]), []).append(partes[1])
                     hist_semana[(med, a, s)] = hist_semana.get((med, a, s), 0) + 1
                 except: continue
 
@@ -92,6 +95,11 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         for d_s, h_s, proc, sen, vara in aud_shuffled:
             is_jec = "JEC" in vara.upper(); dia_txt = obter_nome_dia(d_s)
             
+            # --- FILTRO NOVAS: SE CANCELADO/A, NÃO NOMEIA ---
+            if "CANCELAD" in sen.upper():
+                sim_nomeacoes.append([d_s, h_s, proc, sen, vara, "AUDIÊNCIA CANCELADA", "N/A"])
+                continue
+
             if is_jec and dia_txt == "Segunda" and pode_atuar("PATRÍCIA MARIA O. PASSANEZI", h_s, d_s, c_pago, c_gratuito, c_dia, c_semana, vara):
                 escolhido = "PATRÍCIA MARIA O. PASSANEZI"
             else:
@@ -118,23 +126,16 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
             menor_score = score
             melhor_resultado = {"nomeacoes": sim_nomeacoes, "pago": c_pago, "gratuito": c_gratuito}
 
-    # --- EXCEL COM ORDENAÇÃO TRIPLA ---
     wb = Workbook(); ws = wb.active; ws.title = "Nomeações"
     ws.append(["Data", "Horário", "Processo", "Senha", "Vara", "Mediador", "Tipo"])
 
-    # A mágica da ordenação tripla acontece aqui:
-    # 1º Data (convertida em objeto data), 2º Horário, 3º Vara
     f_list = sorted(
         melhor_resultado["nomeacoes"], 
-        key=lambda x: (
-            datetime.datetime.strptime(x[0], "%d/%m/%Y"), # 1º Data
-            x[1],                                         # 2º Hora
-            x[4]                                          # 3º Vara
-        )
+        key=lambda x: (datetime.datetime.strptime(x[0], "%d/%m/%Y"), x[1], x[4])
     )
 
     for row in f_list: ws.append(row)
-    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.6)"])
+    ws.append([]); ws.append(["RELATÓRIO DE EQUIDADE (V5.8)"])
     ws.append(["Mediador", "Remuneradas", "JEC", "Total"])
     for n in sorted(mediadores_config.keys()):
         p, g = melhor_resultado["pago"][n], melhor_resultado["gratuito"][n]
