@@ -3,7 +3,7 @@ import re
 from openpyxl import Workbook
 
 # =====================================================
-# ESCALA FIXA CEJUSC (v6.2 - EQUILÍBRIO POR SLOT)
+# ESCALA FIXA CEJUSC (v6.3 - EQUILÍBRIO GLOBAL)
 # =====================================================
 escala_fixa = {
     "Segunda": {
@@ -33,69 +33,81 @@ def obter_nome_dia(data_s):
         dt_obj = datetime.datetime.strptime(data_s, "%d/%m/%Y")
         dias = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
         return dias[dt_obj.weekday()]
-    except:
-        return None
+    except: return None
 
 def gerar_nomeacoes_web(texto_existentes, texto_novos):
-    # Contador de audiências por mediador NO LOTE ATUAL
-    contagem_lote = {}
-    # Controle para não colocar dois mediadores no EXATO mesmo processo
-    controle_duplicidade_hora = {}
+    # Dicionário para contar audiências DE CADA UM no lote
+    placar_geral = {}
+    # Controle de quantos processos já ocuparam aquele slot (dia/hora)
+    vagas_preenchidas = {}
     
     padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+([\d.-]+)\s+(\S+)\s+(.*)"
     nomeacoes_finais = []
 
-    linhas = texto_novos.strip().split("\n")
+    # Extrair e limpar as linhas
+    linhas = [l.strip() for l in texto_novos.strip().split("\n") if re.search(padrao, l)]
     
+    # IMPORTANTE: Processamos na ordem que chegam para manter a lógica de preenchimento
     for linha in linhas:
         match = re.search(padrao, linha)
-        if not match: continue
-            
         d_s, h_s, proc, sen, vara = match.groups()
         dia_txt = obter_nome_dia(d_s)
         
+        # 1. Cancelamentos
         if "CANCELAD" in sen.upper() or "CANCELAD" in linha.upper():
             nomeacoes_finais.append([d_s, h_s, proc, sen, vara, "AUDIÊNCIA CANCELADA", "N/A"])
             continue
 
         mediador_escolhido = "VAGO (SEM ESCALA)"
         tipo = "N/A"
-        
-        if dia_txt and dia_txt in escala_fixa and h_s in escala_fixa[dia_txt]:
-            lista_disponiveis = escala_fixa[dia_txt][h_s]
+
+        # 2. Verificar se o dia/hora existe na escala
+        if dia_txt in escala_fixa and h_s in escala_fixa[dia_txt]:
+            candidatos = escala_fixa[dia_txt][h_s]
             
-            # 1. Identificar quantos processos já temos para este exato dia e hora
-            chave_hora = (d_s, h_s)
-            tentativa_num = controle_duplicidade_hora.get(chave_hora, 0)
+            # Verificar quantas audiências já colocamos nesse exato minuto/dia
+            chave_slot = (d_s, h_s)
+            ocupacao_atual = vagas_preenchidas.get(chave_slot, 0)
 
-            # Se ainda houver "vagas" na escala para esse horário
-            if tentativa_num < len(lista_disponiveis):
-                # Se houver mais de uma opção (ex: Ézio ou Lizandra), escolhe quem tem menos no acumulado
-                if len(lista_disponiveis) > 1:
-                    # Ordena os disponíveis pelo total de audiências que já receberam neste processamento
-                    # Quem tem menos vem primeiro
-                    opcoes_ordenadas = sorted(lista_disponiveis, key=lambda m: contagem_lote.get(m, 0))
+            # Só agendamos se o número de processos não exceder o número de mediadores na tabela
+            if ocupacao_atual < len(candidatos):
+                # LÓGICA DE EQUILÍBRIO:
+                # Se houver mais de um candidato, vemos quem já tem menos processos NO TOTAL
+                # Mas precisamos garantir que não vamos repetir o mesmo mediador no mesmo horário
+                
+                # Filtrar candidatos que ainda não foram usados NESTE específico (d_s, h_s)
+                # (Para o caso de horários com 2 mediadores)
+                ja_usados_neste_slot = [n[5] for n in nomeacoes_finais if n[0] == d_s and n[1] == h_s]
+                disponiveis_agora = [c for c in candidatos if c not in ja_usados_neste_slot]
+
+                if disponiveis_agora:
+                    # ESCOLHA: Quem tem o menor valor no placar_geral
+                    escolhido = min(disponiveis_agora, key=lambda m: placar_geral.get(m, 0))
                     
-                    # Se for a primeira audiência do slot, pega o que tem menos trabalho
-                    # Se for a segunda audiência do slot, pega o outro
-                    escolhido = opcoes_ordenadas[tentativa_num]
+                    mediador_escolhido = escolhido
+                    placar_geral[escolhido] = placar_geral.get(escolhido, 0) + 1
+                    vagas_preenchidas[chave_slot] = ocupacao_atual + 1
+                    tipo = "JEC" if "JEC" in vara.upper() else "PAGA"
                 else:
-                    escolhido = lista_disponiveis[0]
-
-                mediador_escolhido = escolhido
-                contagem_lote[escolhido] = contagem_lote.get(escolhido, 0) + 1
-                tipo = "JEC" if "JEC" in vara.upper() else "PAGA"
-                controle_duplicidade_hora[chave_hora] = tentativa_num + 1
+                    mediador_escolhido = "VAGO (EXCEDEU ESCALA)"
             else:
                 mediador_escolhido = "VAGO (EXCEDEU ESCALA)"
 
         nomeacoes_finais.append([d_s, h_s, proc, sen, vara, mediador_escolhido, tipo])
 
-    # Ordenação e Geração do Excel (Igual ao anterior)
+    # Ordenar e Salvar
     nomeacoes_finais.sort(key=lambda x: (datetime.datetime.strptime(x[0], "%d/%m/%Y"), x[1]))
+    
     wb = Workbook()
     ws = wb.active
     ws.title = "Nomeações"
     ws.append(["Data", "Horário", "Processo", "Senha", "Vara", "Mediador", "Tipo"])
     for row in nomeacoes_finais: ws.append(row)
+    
+    # Adiciona um pequeno resumo no final do Excel para você conferir a equidade
+    ws.append([])
+    ws.append(["RESUMO DE NOMEAÇÕES (EQUILÍBRIO)"])
+    for med in sorted(placar_geral.keys()):
+        ws.append([med, placar_geral[med]])
+
     wb.save("NOMEACOES_CEJUSC.xlsx")
