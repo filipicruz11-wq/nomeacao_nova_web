@@ -3,9 +3,8 @@ import re
 from openpyxl import Workbook
 
 # =====================================================
-# ESCALA FIXA CEJUSC (Conforme Tabela)
+# ESCALA FIXA CEJUSC (v6.0 - TRAVA DE EXCEDENTES)
 # =====================================================
-# Estrutura: escala[Dia][Horário] = [Lista de Mediadores]
 escala_fixa = {
     "Segunda": {
         "13:30": ["ÉZIO BARCELOS JÚNIOR", "LIZANDRA GONÇALVES BOTÃO"],
@@ -25,7 +24,7 @@ escala_fixa = {
     "Quinta": {
         "13:30": ["LIZANDRA GONÇALVES BOTÃO", "ÉZIO BARCELOS JÚNIOR"],
         "14:30": ["DANIELLA BOPPRÉ DE A. ABRAM", "JULIANA BABY MARQUES F. MOLES"],
-        "15:30": ["LIZANDRA GONÇALVES BOTÃO"] # Conforme o "?" na tabela, apenas 1 por enquanto
+        "15:30": ["LIZANDRA GONÇALVES BOTÃO"] # APENAS LIZANDRA. O 2º processo sairá como VAGO.
     }
 }
 
@@ -35,61 +34,54 @@ def obter_nome_dia(data_s):
     return dias[dt_obj.weekday()]
 
 def gerar_nomeacoes_fixas(texto_novos):
-    # Dicionário para controlar quem já foi usado no mesmo horário/dia (para pegar o 1º ou 2º da lista)
     controle_duplicidade = {}
-
     padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+([\d.-]+)\s+(\S+)\s+(.*)"
-    linhas = texto_novos.strip().split("\n")
     
     nomeacoes_finais = []
 
-    for linha in linhas:
+    for linha in texto_novos.strip().split("\n"):
         match = re.search(padrao, linha)
-        if not match:
-            continue
+        if not match: continue
             
         d_s, h_s, proc, sen, vara = match.groups()
         dia_txt = obter_nome_dia(d_s)
         
-        # 1. Verificar Cancelamento
+        # 1. Tratamento de Cancelamento
         if "CANCELAD" in sen.upper() or "CANCELAD" in linha.upper():
             nomeacoes_finais.append([d_s, h_s, proc, sen, vara, "AUDIÊNCIA CANCELADA", "N/A"])
             continue
 
-        # 2. Buscar na Escala
-        mediador_escolhido = "SEM ESCALA DEFINIDA"
+        mediador_escolhido = "VAGO (SEM ESCALA)"
         tipo = "N/A"
         
+        # 2. Verificação da Escala Fixa
         if dia_txt in escala_fixa and h_s in escala_fixa[dia_txt]:
             lista_meds = escala_fixa[dia_txt][h_s]
             
-            # Lógica para alternar entre o primeiro e o segundo mediador do mesmo horário
             chave = (d_s, h_s)
             index = controle_duplicidade.get(chave, 0)
             
+            # Só atribui se ainda houver mediador disponível na lista daquele horário
             if index < len(lista_meds):
                 mediador_escolhido = lista_meds[index]
-                controle_duplicidade[chave] = index + 1
                 tipo = "JEC" if "JEC" in vara.upper() else "PAGA"
             else:
-                mediador_escolhido = "EXCEDEU LIMITE DO HORÁRIO"
+                # Se for o 2º processo da Quinta às 15:30 ou o 3º de qualquer outro horário
+                mediador_escolhido = "VAGO (EXCEDEU ESCALA)"
+            
+            controle_duplicidade[chave] = index + 1
 
         nomeacoes_finais.append([d_s, h_s, proc, sen, vara, mediador_escolhido, tipo])
 
-    # Geração do Excel
+    # Salvar Excel
     wb = Workbook()
     ws = wb.active
-    ws.title = "Nomeações Fixas"
+    ws.title = "Nomeações"
     ws.append(["Data", "Horário", "Processo", "Senha", "Vara", "Mediador", "Tipo"])
 
-    # Ordenar por data e hora antes de salvar
+    # Ordenação por data e depois por hora
     f_list = sorted(nomeacoes_finais, key=lambda x: (datetime.datetime.strptime(x[0], "%d/%m/%Y"), x[1]))
 
-    for row in f_list:
-        ws.append(row)
-
+    for row in f_list: ws.append(row)
     wb.save("NOMEACOES_CEJUSC_FIXO.xlsx")
-    print("Arquivo gerado com sucesso: NOMEACOES_CEJUSC_FIXO.xlsx")
-
-# Para rodar, basta chamar a função com o seu texto de novos processos
-# gerar_nomeacoes_fixas(seu_texto_aqui)
+    print("Concluído! Arquivo 'NOMEACOES_CEJUSC_FIXO.xlsx' gerado.")
