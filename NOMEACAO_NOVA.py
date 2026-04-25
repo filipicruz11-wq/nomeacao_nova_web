@@ -3,7 +3,7 @@ import re
 from openpyxl import Workbook
 
 # =====================================================
-# ESCALA FIXA CEJUSC (v6.1 - INTEGRADA COM WEB)
+# ESCALA FIXA CEJUSC (v6.2 - EQUILÍBRIO POR SLOT)
 # =====================================================
 escala_fixa = {
     "Segunda": {
@@ -36,12 +36,13 @@ def obter_nome_dia(data_s):
     except:
         return None
 
-# Mantive o nome 'gerar_nomeacoes_web' para o app.py não dar erro
-# Adicionei 'texto_existentes' como opcional para manter compatibilidade com o formulário
 def gerar_nomeacoes_web(texto_existentes, texto_novos):
-    controle_duplicidade = {}
-    padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+([\d.-]+)\s+(\S+)\s+(.*)"
+    # Contador de audiências por mediador NO LOTE ATUAL
+    contagem_lote = {}
+    # Controle para não colocar dois mediadores no EXATO mesmo processo
+    controle_duplicidade_hora = {}
     
+    padrao = r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+([\d.-]+)\s+(\S+)\s+(.*)"
     nomeacoes_finais = []
 
     linhas = texto_novos.strip().split("\n")
@@ -53,7 +54,6 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         d_s, h_s, proc, sen, vara = match.groups()
         dia_txt = obter_nome_dia(d_s)
         
-        # 1. Tratamento de Cancelamento (Conforme regra de negócio)
         if "CANCELAD" in sen.upper() or "CANCELAD" in linha.upper():
             nomeacoes_finais.append([d_s, h_s, proc, sen, vara, "AUDIÊNCIA CANCELADA", "N/A"])
             continue
@@ -61,34 +61,41 @@ def gerar_nomeacoes_web(texto_existentes, texto_novos):
         mediador_escolhido = "VAGO (SEM ESCALA)"
         tipo = "N/A"
         
-        # 2. Aplicação da Escala Fixa
         if dia_txt and dia_txt in escala_fixa and h_s in escala_fixa[dia_txt]:
-            lista_meds = escala_fixa[dia_txt][h_s]
+            lista_disponiveis = escala_fixa[dia_txt][h_s]
             
-            chave = (d_s, h_s)
-            index = controle_duplicidade.get(chave, 0)
-            
-            if index < len(lista_meds):
-                mediador_escolhido = lista_meds[index]
+            # 1. Identificar quantos processos já temos para este exato dia e hora
+            chave_hora = (d_s, h_s)
+            tentativa_num = controle_duplicidade_hora.get(chave_hora, 0)
+
+            # Se ainda houver "vagas" na escala para esse horário
+            if tentativa_num < len(lista_disponiveis):
+                # Se houver mais de uma opção (ex: Ézio ou Lizandra), escolhe quem tem menos no acumulado
+                if len(lista_disponiveis) > 1:
+                    # Ordena os disponíveis pelo total de audiências que já receberam neste processamento
+                    # Quem tem menos vem primeiro
+                    opcoes_ordenadas = sorted(lista_disponiveis, key=lambda m: contagem_lote.get(m, 0))
+                    
+                    # Se for a primeira audiência do slot, pega o que tem menos trabalho
+                    # Se for a segunda audiência do slot, pega o outro
+                    escolhido = opcoes_ordenadas[tentativa_num]
+                else:
+                    escolhido = lista_disponiveis[0]
+
+                mediador_escolhido = escolhido
+                contagem_lote[escolhido] = contagem_lote.get(escolhido, 0) + 1
                 tipo = "JEC" if "JEC" in vara.upper() else "PAGA"
+                controle_duplicidade_hora[chave_hora] = tentativa_num + 1
             else:
                 mediador_escolhido = "VAGO (EXCEDEU ESCALA)"
-            
-            controle_duplicidade[chave] = index + 1
 
         nomeacoes_finais.append([d_s, h_s, proc, sen, vara, mediador_escolhido, tipo])
 
-    # Ordenação cronológica para o Excel
+    # Ordenação e Geração do Excel (Igual ao anterior)
     nomeacoes_finais.sort(key=lambda x: (datetime.datetime.strptime(x[0], "%d/%m/%Y"), x[1]))
-
-    # Geração do Arquivo
     wb = Workbook()
     ws = wb.active
     ws.title = "Nomeações"
     ws.append(["Data", "Horário", "Processo", "Senha", "Vara", "Mediador", "Tipo"])
-
-    for row in nomeacoes_finais:
-        ws.append(row)
-
-    # O nome do arquivo deve ser exatamente o que o app.py espera
+    for row in nomeacoes_finais: ws.append(row)
     wb.save("NOMEACOES_CEJUSC.xlsx")
